@@ -4,5 +4,5 @@ run:
     cargo run
 
 
-run_default:
+run_with_device:
     cargo run -- --device-name "Microphone (4- G55)"
