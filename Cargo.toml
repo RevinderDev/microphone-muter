@@ -23,3 +23,9 @@ features = [
     "Win32_Media_Audio_Endpoints",
     "Win32_Devices_FunctionDiscovery"
 ]
+
+[profile.dev]
+opt-level = 0
+
+[profile.release]
+opt-level = 3

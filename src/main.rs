@@ -1,13 +1,12 @@
 use chrono::Local;
-use std::os::raw::c_void;
-use std::ptr::{self, NonNull};
-use std::sync::{Arc, Mutex};
+
+use std::ptr::{self};
+use std::sync::Mutex;
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
 use windows::{
     core::Error,
     Win32::{
-        Foundation::{FALSE, TRUE},
         Media::Audio::{
             eCapture, eMultimedia, Endpoints::IAudioEndpointVolume, IMMDevice, IMMDeviceEnumerator,
             MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
@@ -57,7 +56,6 @@ unsafe fn get_microphone(searched_device_name: Option<String>) -> Result<IMMDevi
         }
         panic!("Couldn't find desired microphone.");
     } else {
-        let device = enumerator.GetDefaultAudioEndpoint(eCapture, eMultimedia)?;
         return Ok(enumerator.GetDefaultAudioEndpoint(eCapture, eMultimedia)?);
     };
 }
