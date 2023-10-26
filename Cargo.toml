@@ -9,7 +9,11 @@ edition = "2021"
 chrono = { version = "0.4.31", features = ["clock"] }
 clap = { version = "4.4.6", features = ["derive"] }
 hookmap = "0.5.1"
+tray-item = "0.9.0"
 
+
+[build-dependencies]
+embed-resource = "2.4.0"
 
 [dependencies.windows]
 version = "0.51.1"
