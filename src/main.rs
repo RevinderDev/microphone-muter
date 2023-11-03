@@ -1,14 +1,15 @@
-use chrono::Local;
-use windows::core::{HSTRING, PCWSTR};
+#![windows_subsystem = "windows"]
+#![allow(unused)]
+use rodio::Sink;
+use std::io::Cursor;
+use windows::core::HSTRING;
 
-use std::ffi::OsStr;
 use std::ptr::{self};
-use std::sync::Mutex;
+
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
 use windows::Win32::UI::WindowsAndMessaging::{
-    MessageBoxW, MB_CANCELTRYCONTINUE, MB_DEFBUTTON1, MB_DEFBUTTON2, MB_ICONERROR,
-    MB_ICONINFORMATION, MB_ICONWARNING, MB_OK,
+    MessageBoxW, MB_DEFBUTTON1, MB_ICONERROR, MB_ICONINFORMATION, MB_OK,
 };
 use windows::{
     core::Error,
@@ -24,11 +25,14 @@ use windows::{
 };
 
 use clap::Parser;
-use hookmap::{device, prelude::*};
-use std::iter::once;
-use std::os::windows::ffi::OsStrExt;
+use hookmap::prelude::*;
+use rodio::{source::Source, Decoder, OutputStream};
+use std::fs::File;
+use std::io::BufReader;
+use std::sync::mpsc::SyncSender;
+
 use std::process;
-use std::ptr::null_mut;
+
 use std::sync::mpsc;
 use std::thread;
 
@@ -43,6 +47,8 @@ struct Cli {
 enum Message {
     Quit,
     KeybindPressed,
+    MicrophoneMuted,
+    MicrophoneUnmuted,
 }
 
 unsafe fn get_device_name(device: &IMMDevice) -> Result<String, Error> {
@@ -71,17 +77,17 @@ unsafe fn get_microphone(searched_device_name: Option<String>) -> Result<IMMDevi
     };
 }
 
-unsafe fn swap_microphone_muting_state(audio_endpoint: &IAudioEndpointVolume) {
+unsafe fn swap_microphone_muting_state(
+    audio_endpoint: &IAudioEndpointVolume,
+    sender: &SyncSender<Message>,
+) {
     unsafe {
         let muting_action = !audio_endpoint.GetMute().unwrap();
-        let muting_message = match muting_action.into() {
-            true => "🔇",
-            false => "🔊",
+        match muting_action.into() {
+            true => sender.send(Message::MicrophoneMuted),
+            false => sender.send(Message::MicrophoneUnmuted),
         };
-        audio_endpoint
-            .SetMute(!audio_endpoint.GetMute().unwrap(), ptr::null())
-            .unwrap();
-        println!("{}", muting_message);
+        audio_endpoint.SetMute(muting_action, ptr::null()).unwrap();
     }
 }
 
@@ -113,27 +119,8 @@ unsafe fn get_audio_endpoint(
     }
 }
 
-#[allow(unused)]
-fn main() -> Result<(), Error> {
-    let mut tray = TrayItem::new("Microphone Muter", IconSource::Resource("aa-exe-icon")).unwrap();
-
-    let (audio_endpoint, device_name) =
-        unsafe { get_audio_endpoint(Cli::parse().device_name) }.unwrap();
-    tray.add_label(format!("Selected device: {device_name}").as_str());
-    tray.inner_mut().add_separator();
-
-    let (tx, rx) = mpsc::sync_channel(2);
-    let quit_receiver = tx.clone();
-    tray.add_menu_item("Quit", move || {
-        quit_receiver.send(Message::Quit);
-    });
-
-    // TODO: Swap icon when it mutes the microphone.
-    // TODO: Select microphone through UI.
-    // TODO: Move everything to much easier threading model.
-
+fn init_muting_hotkey(sender: SyncSender<Message>) {
     thread::spawn(move || {
-        let hotkey_sender = tx.clone();
         let mut hotkey = Hotkey::new();
         hotkey
             .register(
@@ -142,10 +129,37 @@ fn main() -> Result<(), Error> {
                     .native_event_operation(NativeEventOperation::Block),
             )
             .on_press(Button::SideButton2, move |_| {
-                hotkey_sender.send(Message::KeybindPressed).unwrap();
+                sender.send(Message::KeybindPressed);
             });
         hotkey.install();
     });
+}
+// TODO: Select microphone through UI.
+// TODO: Allow selecting keybind of your own
+// TODO: Allow user select volume somehow..
+
+fn main() -> Result<(), Error> {
+    let mut tray = TrayItem::new("Microphone Muter", IconSource::Resource("aa-exe-icon")).unwrap();
+
+    let (audio_endpoint, device_name) =
+        unsafe { get_audio_endpoint(Cli::parse().device_name) }.unwrap();
+    tray.add_label(format!("Selected device: {device_name}").as_str());
+
+    let (tx, rx) = mpsc::sync_channel(2);
+
+    init_muting_hotkey(tx.clone());
+
+    let quit_sender = tx.clone();
+    tray.add_menu_item("Quit", move || {
+        quit_sender.send(Message::Quit);
+    });
+
+    let microphone_state_sender = tx.clone();
+    let (_stream, stream_handle) = OutputStream::try_default().unwrap();
+    let sink = Sink::try_new(&stream_handle).unwrap();
+    sink.set_volume(0.2);
+    let activated_sound = Cursor::new(include_bytes!("../sounds/Activated.wav"));
+    let muted_sound = Cursor::new(include_bytes!("../sounds/Muted.wav"));
 
     loop {
         match rx.recv() {
@@ -155,7 +169,15 @@ fn main() -> Result<(), Error> {
                 process::exit(0);
             }
             Ok(Message::KeybindPressed) => {
-                unsafe { swap_microphone_muting_state(&audio_endpoint) };
+                unsafe { swap_microphone_muting_state(&audio_endpoint, &microphone_state_sender) };
+            }
+            Ok(Message::MicrophoneMuted) => {
+                sink.skip_one();
+                sink.append(Decoder::new(muted_sound.clone()).unwrap());
+            }
+            Ok(Message::MicrophoneUnmuted) => {
+                sink.skip_one();
+                sink.append(Decoder::new(activated_sound.clone()).unwrap());
             }
             _ => {}
         }
