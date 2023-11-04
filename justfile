@@ -5,4 +5,4 @@ run:
 
 
 run_with_device:
-    cargo run -- --device-name "Microphone (4- G55) aaa"
+    cargo run -- --device-name "Microphone (4- G55)"
