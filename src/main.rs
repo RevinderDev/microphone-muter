@@ -37,6 +37,11 @@ use std::sync::mpsc;
 use std::thread;
 
 use tray_item::{IconSource, TrayItem};
+
+const MUTED_SOUND: &[u8] = include_bytes!("../sounds/Muted.wav");
+const ACTIVATED_SOUND: &[u8] = include_bytes!("../sounds/Activated.wav");
+const SOUND_VOLUME: f32 = 0.2;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -53,10 +58,10 @@ enum Message {
 
 unsafe fn get_device_name(device: &IMMDevice) -> Result<String, Error> {
     let property_store = device.OpenPropertyStore(STGM_READ)?;
-    return Ok(
+    Ok(
         PropVariantToStringAlloc(&property_store.GetValue(&PKEY_Device_FriendlyName)?)?
             .to_string()?,
-    );
+    )
 }
 
 unsafe fn get_microphone(searched_device_name: Option<String>) -> Result<IMMDevice, Error> {
@@ -71,10 +76,10 @@ unsafe fn get_microphone(searched_device_name: Option<String>) -> Result<IMMDevi
                 return Ok(device);
             }
         }
-        return Err(Error::from_win32());
+        Err(Error::from_win32())
     } else {
-        return Ok(enumerator.GetDefaultAudioEndpoint(eCapture, eMultimedia)?);
-    };
+        Ok(enumerator.GetDefaultAudioEndpoint(eCapture, eMultimedia)?)
+    }
 }
 
 unsafe fn swap_microphone_muting_state(
@@ -134,9 +139,22 @@ fn init_muting_hotkey(sender: SyncSender<Message>) {
         hotkey.install();
     });
 }
-// TODO: Select microphone through UI.
-// TODO: Allow selecting keybind of your own
-// TODO: Allow user select volume somehow..
+
+fn play_sound(sound: &'static [u8]) {
+    thread::spawn(move || {
+        let (_stream, stream_handle) = OutputStream::try_default().unwrap();
+        let sink = Sink::try_new(&stream_handle).unwrap();
+        sink.set_volume(SOUND_VOLUME);
+        sink.append(Decoder::new(Cursor::new(sound)).unwrap());
+        sink.sleep_until_end();
+    });
+}
+
+// TODO I: Select microphone through UI.
+// TODO II: Allow selecting keybind of your own
+// TODO III: Allow user select volume somehow..
+// TODO IV: Rather than creating new sink for every play sound. Create it once,
+// this will however create problem when you change default device, thus there would be need to check if default device changed.
 
 fn main() -> Result<(), Error> {
     let mut tray = TrayItem::new("Microphone Muter", IconSource::Resource("aa-exe-icon")).unwrap();
@@ -155,12 +173,6 @@ fn main() -> Result<(), Error> {
     });
 
     let microphone_state_sender = tx.clone();
-    let (_stream, stream_handle) = OutputStream::try_default().unwrap();
-    let sink = Sink::try_new(&stream_handle).unwrap();
-    sink.set_volume(0.2);
-    let activated_sound = Cursor::new(include_bytes!("../sounds/Activated.wav"));
-    let muted_sound = Cursor::new(include_bytes!("../sounds/Muted.wav"));
-
     loop {
         match rx.recv() {
             Ok(Message::Quit) => {
@@ -172,14 +184,12 @@ fn main() -> Result<(), Error> {
                 unsafe { swap_microphone_muting_state(&audio_endpoint, &microphone_state_sender) };
             }
             Ok(Message::MicrophoneMuted) => {
-                sink.skip_one();
-                sink.append(Decoder::new(muted_sound.clone()).unwrap());
+                play_sound(MUTED_SOUND);
             }
             Ok(Message::MicrophoneUnmuted) => {
-                sink.skip_one();
-                sink.append(Decoder::new(activated_sound.clone()).unwrap());
+                play_sound(ACTIVATED_SOUND);
             }
-            _ => {}
+            Err(_) => process::abort(),
         }
     }
 }
