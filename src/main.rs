@@ -5,6 +5,7 @@ use std::io::Cursor;
 use windows::core::HSTRING;
 
 use std::ptr::{self};
+use threadpool::ThreadPool;
 
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::System::Com::StructuredStorage::PropVariantToStringAlloc;
@@ -140,21 +141,17 @@ fn init_muting_hotkey(sender: SyncSender<Message>) {
     });
 }
 
-fn play_sound(sound: &'static [u8]) {
-    thread::spawn(move || {
-        let (_stream, stream_handle) = OutputStream::try_default().unwrap();
-        let sink = Sink::try_new(&stream_handle).unwrap();
-        sink.set_volume(SOUND_VOLUME);
-        sink.append(Decoder::new(Cursor::new(sound)).unwrap());
-        sink.sleep_until_end();
-    });
+fn play_sound_blocking(sound: &'static [u8]) {
+    let (_stream, stream_handle) = OutputStream::try_default().unwrap();
+    let sink = Sink::try_new(&stream_handle).unwrap();
+    sink.set_volume(SOUND_VOLUME);
+    sink.append(Decoder::new(Cursor::new(sound)).unwrap());
+    sink.sleep_until_end();
 }
 
 // TODO I: Select microphone through UI.
 // TODO II: Allow selecting keybind of your own
 // TODO III: Allow user select volume somehow..
-// TODO IV: Rather than creating new sink for every play sound. Create it once,
-// this will however create problem when you change default device, thus there would be need to check if default device changed.
 
 fn main() -> Result<(), Error> {
     let mut tray = TrayItem::new("Microphone Muter", IconSource::Resource("aa-exe-icon")).unwrap();
@@ -167,11 +164,12 @@ fn main() -> Result<(), Error> {
 
     init_muting_hotkey(tx.clone());
 
-    let quit_sender = tx.clone();
+    let quit_sender: SyncSender<Message> = tx.clone();
     tray.add_menu_item("Quit", move || {
         quit_sender.send(Message::Quit);
     });
 
+    let sound_thread_pool = ThreadPool::new(2);
     let microphone_state_sender = tx.clone();
     loop {
         match rx.recv() {
@@ -184,10 +182,14 @@ fn main() -> Result<(), Error> {
                 unsafe { swap_microphone_muting_state(&audio_endpoint, &microphone_state_sender) };
             }
             Ok(Message::MicrophoneMuted) => {
-                play_sound(MUTED_SOUND);
+                sound_thread_pool.execute(move || {
+                    play_sound_blocking(MUTED_SOUND);
+                });
             }
             Ok(Message::MicrophoneUnmuted) => {
-                play_sound(ACTIVATED_SOUND);
+                sound_thread_pool.execute(move || {
+                    play_sound_blocking(ACTIVATED_SOUND);
+                });
             }
             Err(_) => process::abort(),
         }
